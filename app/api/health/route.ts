@@ -56,8 +56,69 @@ async function checkQueue(): Promise<HealthCheck & { counts?: unknown }> {
   }
 }
 
+/**
+ * Delivery-level facts for external watchdogs. The infra checks above say the
+ * machine is up; these say whether the machine is DOING anything and whether
+ * anything it did failed — because a quiet system and a dead system look
+ * identical from the infra checks alone. Counts only, no PII: this endpoint
+ * is unauthenticated.
+ */
+async function checkOps() {
+  try {
+    const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const [
+      dmSent24h,
+      dmFailed24h,
+      publicReplyErrors24h,
+      webhookEvents24h,
+      accounts,
+      fbPages,
+    ] = await Promise.all([
+      prisma.dmLog.count({
+        where: { status: "SENT", dmSentAt: { gte: dayAgo } },
+      }),
+      prisma.dmLog.count({
+        where: { status: "FAILED", updatedAt: { gte: dayAgo } },
+      }),
+      prisma.dmLog.count({
+        where: { publicReplyError: { not: null }, updatedAt: { gte: dayAgo } },
+      }),
+      prisma.webhookEvent.count({ where: { createdAt: { gte: dayAgo } } }),
+      prisma.instagramAccount.findMany({
+        select: { tokenExpiresAt: true },
+      }),
+      prisma.facebookPage.count(),
+    ]);
+
+    const soonest = accounts
+      .map((a) => a.tokenExpiresAt?.getTime())
+      .filter((t): t is number => typeof t === "number")
+      .sort((a, b) => a - b)[0];
+    const igTokenDaysRemaining =
+      soonest === undefined
+        ? null
+        : Math.floor((soonest - Date.now()) / (24 * 60 * 60 * 1000));
+
+    return {
+      status: "ok" as const,
+      dmSent24h,
+      dmFailed24h,
+      publicReplyErrors24h,
+      webhookEvents24h,
+      igAccounts: accounts.length,
+      fbPages,
+      igTokenDaysRemaining,
+    };
+  } catch (error) {
+    return {
+      status: "error" as const,
+      detail: error instanceof Error ? error.message : "Ops check failed",
+    };
+  }
+}
+
 export async function GET() {
-  const [database, redis, queue, worker] = await Promise.all([
+  const [database, redis, queue, worker, ops] = await Promise.all([
     checkDatabase(),
     checkRedis(),
     checkQueue(),
@@ -67,6 +128,7 @@ export async function GET() {
       ageMs: null,
       error: error instanceof Error ? error.message : "Worker check failed",
     })),
+    checkOps(),
   ]);
 
   const healthy =
@@ -83,6 +145,7 @@ export async function GET() {
         redis,
         queue,
         worker,
+        ops,
       },
     },
     { status: healthy ? 200 : 503 }
