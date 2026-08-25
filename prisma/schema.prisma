@@ -78,6 +78,7 @@ model Workspace {
   members           WorkspaceMember[]
   invitations       WorkspaceInvitation[]
   instagramAccounts InstagramAccount[]
+  facebookPages     FacebookPage[]
   automations       Automation[]
   dmLogs            DmLog[]
   trackedLinks      TrackedLink[]
@@ -141,6 +142,26 @@ model InstagramAccount {
   dmLogs      DmLog[]
   linkClicks  LinkClick[]
   followerSnapshots FollowerSnapshot[]
+
+  @@index([workspaceId])
+}
+
+/// A connected Facebook Page. The Facebook lane: comments on the Page's posts
+/// are matched against the workspace's campaigns (a campaign's word covers both
+/// platforms — platform is a delivery detail, never configured twice), and the
+/// reply goes out as a Messenger private reply using this Page's token.
+model FacebookPage {
+  id                String   @id @default(cuid())
+  workspaceId       String
+  pageId            String   @unique
+  name              String
+  category          String?
+  accessToken       String
+  webhookSubscribed Boolean  @default(false)
+  connectedAt       DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
 }
@@ -228,6 +249,10 @@ model DmLog {
   commentText   String
   commentId     String
   matchedKeyword String?
+  // "instagram" | "facebook". A Facebook row still points at the workspace's
+  // Instagram account through the automation's required relation — the platform
+  // column is what actually says where the comment lived and the reply went.
+  platform      String   @default("instagram")
   status        DmStatus @default(PENDING)
   attempts      Int      @default(0)
   dmSentAt      DateTime?

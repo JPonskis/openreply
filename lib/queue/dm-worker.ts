@@ -5,8 +5,10 @@ import {
   MESSAGE_JOB_NAME,
   POSTBACK_JOB_NAME,
   FOLLOWUP_JOB_NAME,
+  FB_COMMENT_JOB_NAME,
   type DmQueueJob,
   type ProcessCommentJob,
+  type ProcessFbCommentJob,
   type ProcessMessageJob,
   type ProcessPostbackJob,
   type ProcessFollowUpJob,
@@ -25,6 +27,11 @@ import {
   sendPrivateReplyWithButton,
   sendPrivateReplyWithLinkButton,
 } from "@/lib/meta/client";
+import {
+  sendFacebookCommentReply,
+  sendFacebookPrivateReply,
+  sendFacebookPrivateReplyWithLinkButton,
+} from "@/lib/meta/fb-client";
 import { decryptToken } from "@/lib/meta/oauth";
 import { matchKeywords } from "@/lib/utils/keyword-matcher";
 import { reserveDMSlot } from "@/lib/utils/rate-limiter";
@@ -1186,6 +1193,365 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   }
 }
 
+/**
+ * The Facebook lane's comment handler. Mirrors processComment stage for stage
+ * (match → log → public reply → one-private-reply dedup → usage/rate limits →
+ * send → SENT), with two platform differences: campaigns are matched by
+ * workspace rather than by post (campaign postIds are Instagram media ids, so
+ * on Facebook only any-post campaigns and future FB-post-bound ones apply),
+ * and delivery runs through the Page token over Messenger.
+ *
+ * Follow-gating and opening DMs are Instagram-only features; a campaign with
+ * either enabled still delivers its link DM here, gate-free, because a
+ * Facebook commenter has no IG follow relationship to check.
+ */
+async function processFbComment(job: Job<ProcessFbCommentJob>): Promise<void> {
+  const {
+    pageId,
+    commentId,
+    commentText,
+    commenterId,
+    commenterName,
+    postId,
+  } = job.data;
+  const requeueAttempt = job.data.requeueAttempt ?? 0;
+
+  const page = await prisma.facebookPage.findUnique({
+    where: { pageId },
+  });
+  if (!page) {
+    // A webhook for a Page nobody connected — nothing to act for.
+    console.log(`[DM Worker] FB comment for unknown page ${pageId}, skipping`);
+    return;
+  }
+
+  let pageToken: string;
+  try {
+    pageToken = decryptToken(page.accessToken);
+  } catch {
+    await prisma.operationalEvent
+      .create({
+        data: {
+          workspaceId: page.workspaceId,
+          source: "WORKER",
+          level: "ERROR",
+          message: `Failed to decrypt Facebook Page token for ${page.name}`,
+          payload: { pageId, commentId },
+        },
+      })
+      .catch(() => {});
+    return;
+  }
+
+  const automations = await prisma.automation.findMany({
+    where: {
+      OR: [{ postId }, { matchAnyPost: true }],
+      isActive: true,
+      workspaceId: page.workspaceId,
+    },
+    include: {
+      instagramAccount: true,
+      workspace: true,
+      trackedLinks: {
+        select: { slug: true, label: true, destinationUrl: true },
+        orderBy: { createdAt: "asc" },
+      },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  for (const automation of automations) {
+    const matchResult = automation.matchAnyWord
+      ? { matched: true, matchedKeyword: null }
+      : matchKeywords(
+          commentText,
+          automation.keywords,
+          automation.wholeWordMatch
+        );
+
+    if (!matchResult.matched) continue;
+
+    const existingLog = await prisma.dmLog.findUnique({
+      where: {
+        automationId_commentId: { automationId: automation.id, commentId },
+      },
+    });
+
+    const alreadyDmd = existingLog?.status === "SENT";
+    const alreadyPublicReplied = Boolean(existingLog?.publicReplySentAt);
+    const needsDm = !alreadyDmd;
+
+    if (existingLog?.status === "SKIPPED_PLAN_LIMIT") continue;
+    if (alreadyDmd && (alreadyPublicReplied || !automation.publicReplyEnabled)) {
+      continue;
+    }
+
+    if (!existingLog) {
+      await prisma.dmLog.create({
+        data: {
+          workspaceId: automation.workspaceId,
+          automationId: automation.id,
+          instagramAccountId: automation.instagramAccountId,
+          platform: "facebook",
+          commenterId,
+          commenterName,
+          commentText,
+          commentId,
+          matchedKeyword: matchResult.matchedKeyword,
+          status: "PENDING",
+          attempts: job.attemptsMade + 1,
+        },
+      });
+    } else if (needsDm) {
+      await prisma.dmLog.update({
+        where: {
+          automationId_commentId: { automationId: automation.id, commentId },
+        },
+        data: {
+          status: "PENDING",
+          attempts: job.attemptsMade + 1,
+          matchedKeyword: matchResult.matchedKeyword,
+          errorMessage: null,
+        },
+      });
+    }
+
+    // Public reply first, decoupled from the DM, idempotent via
+    // publicReplySentAt — same contract as the Instagram lane.
+    const replyPool =
+      automation.publicReplyMessages.length > 0
+        ? automation.publicReplyMessages
+        : automation.publicReplyMessage
+          ? [automation.publicReplyMessage]
+          : [];
+    if (
+      automation.publicReplyEnabled &&
+      replyPool.length > 0 &&
+      !existingLog?.publicReplySentAt
+    ) {
+      try {
+        const chosen = replyPool[Math.floor(Math.random() * replyPool.length)];
+        const publicReply = renderMessageWithTracking({
+          message: chosen,
+          commenterName,
+          trackedLinks: automation.trackedLinks,
+        });
+        await sendFacebookCommentReply(pageToken, commentId, publicReply);
+        await prisma.dmLog.update({
+          where: {
+            automationId_commentId: { automationId: automation.id, commentId },
+          },
+          data: { publicReplySentAt: new Date(), publicReplyError: null },
+        });
+      } catch (error) {
+        console.error(
+          "[DM Worker] FB public comment reply failed:",
+          formatError(error)
+        );
+        await prisma.dmLog
+          .update({
+            where: {
+              automationId_commentId: { automationId: automation.id, commentId },
+            },
+            data: { publicReplyError: formatError(error) },
+          })
+          .catch(() => {});
+      }
+    }
+
+    if (!needsDm) continue;
+
+    // Meta allows one private reply per comment on Facebook too.
+    const privateReplyUsedBy = await prisma.dmLog.findFirst({
+      where: {
+        commentId,
+        status: "SENT",
+        automationId: { not: automation.id },
+      },
+      select: { automation: { select: { name: true } } },
+    });
+    if (privateReplyUsedBy) {
+      await prisma.dmLog.update({
+        where: {
+          automationId_commentId: { automationId: automation.id, commentId },
+        },
+        data: {
+          status: "SKIPPED_DEDUP",
+          matchedKeyword: matchResult.matchedKeyword,
+          errorMessage: `Another campaign (${privateReplyUsedBy.automation?.name ?? "unknown"}) already sent the one private reply Facebook allows for this comment`,
+        },
+      });
+      continue;
+    }
+
+    const usage = await reserveWorkspaceDMSend(automation.workspaceId);
+    if (!usage.allowed) {
+      await prisma.dmLog.update({
+        where: {
+          automationId_commentId: { automationId: automation.id, commentId },
+        },
+        data: {
+          status: "SKIPPED_PLAN_LIMIT",
+          matchedKeyword: matchResult.matchedKeyword,
+          errorMessage: `Monthly DM limit reached (${usage.limit})`,
+        },
+      });
+      continue;
+    }
+
+    // Rate-limit slot keyed by the Page id, so Facebook sends pace
+    // independently of the Instagram account's own hourly budget.
+    let rateLimit;
+    try {
+      rateLimit = await reserveDMSlot(pageId, requeueAttempt);
+    } catch (error) {
+      await releaseWorkspaceDMReservation(
+        automation.workspaceId,
+        usage.periodStart
+      );
+      await prisma.dmLog.update({
+        where: {
+          automationId_commentId: { automationId: automation.id, commentId },
+        },
+        data: {
+          status: "FAILED",
+          attempts: job.attemptsMade + 1,
+          errorMessage: formatError(error),
+        },
+      });
+      throw error;
+    }
+
+    if (!rateLimit.allowed) {
+      await releaseWorkspaceDMReservation(
+        automation.workspaceId,
+        usage.periodStart
+      );
+
+      if (rateLimit.shouldSkip) {
+        await prisma.dmLog.update({
+          where: {
+            automationId_commentId: { automationId: automation.id, commentId },
+          },
+          data: {
+            status: "SKIPPED_RATE_LIMIT",
+            matchedKeyword: matchResult.matchedKeyword,
+            errorMessage: "Hourly Facebook DM rate limit reached",
+          },
+        });
+        continue;
+      }
+
+      if (rateLimit.shouldRequeue) {
+        await prisma.dmLog.update({
+          where: {
+            automationId_commentId: { automationId: automation.id, commentId },
+          },
+          data: {
+            status: "PENDING",
+            matchedKeyword: matchResult.matchedKeyword,
+            errorMessage: "Hourly rate limit hit; retry scheduled",
+          },
+        });
+
+        await getDMQueue().add(
+          FB_COMMENT_JOB_NAME,
+          { ...job.data, requeueAttempt: requeueAttempt + 1 },
+          {
+            delay: rateLimit.requeueDelayMs,
+            jobId: `fbcomment_${pageId}_${commentId}_retry_${requeueAttempt + 1}`,
+          }
+        );
+        continue;
+      }
+    }
+
+    try {
+      if (automation.trackedLinks.length > 0) {
+        const bodyText =
+          renderMessageWithoutLink({
+            message: automation.dmMessage,
+            commenterName,
+          }) || "Here's your link:";
+        const buttons = buildLinkButtons(
+          automation.trackedLinks,
+          automation.linkButtonLabel
+        );
+
+        try {
+          await sendFacebookPrivateReplyWithLinkButton(
+            pageToken,
+            pageId,
+            commentId,
+            bodyText,
+            buttons
+          );
+        } catch (buttonError) {
+          if (!isTemplateRejection(buttonError)) throw buttonError;
+
+          console.log(
+            "[DM Worker] FB button template rejected, falling back to inline link:",
+            formatError(buttonError)
+          );
+          const fallbackMessage = buildInlineLinkFallback(
+            automation.dmMessage,
+            commenterName,
+            automation.trackedLinks,
+            bodyText
+          );
+          try {
+            await sendFacebookPrivateReply(
+              pageToken,
+              pageId,
+              commentId,
+              fallbackMessage
+            );
+          } catch {
+            // The first attempt consumed the comment's single private reply;
+            // surface the original rejection, not the misleading second error.
+            throw buttonError;
+          }
+        }
+      } else {
+        const dmMessage = renderMessageWithTracking({
+          message: automation.dmMessage,
+          commenterName,
+          trackedLinks: automation.trackedLinks,
+        });
+        await sendFacebookPrivateReply(pageToken, pageId, commentId, dmMessage);
+      }
+
+      await prisma.dmLog.update({
+        where: {
+          automationId_commentId: { automationId: automation.id, commentId },
+        },
+        data: {
+          status: "SENT",
+          dmSentAt: new Date(),
+          errorMessage: null,
+        },
+      });
+    } catch (error) {
+      await releaseWorkspaceDMReservation(
+        automation.workspaceId,
+        usage.periodStart
+      );
+
+      await prisma.dmLog.update({
+        where: {
+          automationId_commentId: { automationId: automation.id, commentId },
+        },
+        data: {
+          status: "FAILED",
+          attempts: job.attemptsMade + 1,
+          errorMessage: formatError(error),
+        },
+      });
+      throw error;
+    }
+  }
+}
+
 async function processJob(job: Job<DmQueueJob>): Promise<void> {
   if (job.name === POSTBACK_JOB_NAME) {
     return processPostback(job as Job<ProcessPostbackJob>);
@@ -1196,6 +1562,9 @@ async function processJob(job: Job<DmQueueJob>): Promise<void> {
   if (job.name === MESSAGE_JOB_NAME) {
     return processMessage(job as Job<ProcessMessageJob>);
   }
+  if (job.name === FB_COMMENT_JOB_NAME) {
+    return processFbComment(job as Job<ProcessFbCommentJob>);
+  }
   return processComment(job as Job<ProcessCommentJob>);
 }
 
@@ -1204,7 +1573,10 @@ async function recordWorkerFailure(
   error: Error
 ) {
   try {
-    const instagramAccountId = job?.data.instagramAccountId;
+    const instagramAccountId =
+      job && "instagramAccountId" in job.data
+        ? job.data.instagramAccountId
+        : undefined;
     const commentId =
       job && "commentId" in job.data ? job.data.commentId : null;
     const account = instagramAccountId

@@ -161,6 +161,76 @@ export function parseCommentEvents(payload: WebhookPayload): WebhookCommentEvent
   return events;
 }
 
+export interface FacebookCommentEvent {
+  pageId: string;
+  commentId: string;
+  commentText: string;
+  commenterId: string;
+  commenterName?: string;
+  postId: string;
+}
+
+interface FacebookFeedChange {
+  field: string;
+  value?: {
+    item?: string;
+    verb?: string;
+    comment_id?: string;
+    post_id?: string;
+    message?: string;
+    from?: { id?: string; name?: string };
+    parent_id?: string;
+  };
+}
+
+/**
+ * Parse Page comment events out of a webhook payload with object "page".
+ * These arrive on the "feed" field with item "comment". Only verb "add"
+ * matters — edits and removes carry no new person to answer.
+ *
+ * The Page's own comments are dropped here for the same reason the Instagram
+ * parser drops the account's own: our public replies are Page comments, so
+ * without this filter every reply the tool posts would echo straight back in
+ * as a fresh event.
+ */
+export function parseFacebookCommentEvents(
+  payload: WebhookPayload
+): FacebookCommentEvent[] {
+  const events: FacebookCommentEvent[] = [];
+
+  if (payload.object !== "page") return events;
+
+  for (const entry of payload.entry ?? []) {
+    const changes = (entry.changes ?? []) as unknown as FacebookFeedChange[];
+    for (const change of changes) {
+      if (change.field !== "feed") continue;
+
+      const value = change.value;
+      if (value?.item !== "comment") continue;
+      if (value.verb && value.verb !== "add") continue;
+
+      const commentId = value.comment_id;
+      const postId = value.post_id;
+      const commenterId = value.from?.id;
+
+      if (!entry.id || !commentId || !postId || !commenterId) continue;
+      // The Page commenting on itself — including our own public replies.
+      if (commenterId === entry.id) continue;
+
+      events.push({
+        pageId: entry.id,
+        commentId,
+        commentText: value.message ?? "",
+        commenterId,
+        commenterName: value.from?.name,
+        postId,
+      });
+    }
+  }
+
+  return events;
+}
+
 /**
  * Parse button-tap postbacks (from an opening DM's button) out of a webhook
  * payload. Each event carries the tapping user's IGSID and our postback payload.

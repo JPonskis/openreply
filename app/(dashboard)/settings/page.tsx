@@ -24,6 +24,15 @@ interface SettingsData {
   >;
 }
 
+interface FacebookPageRow {
+  id: string;
+  pageId: string;
+  name: string;
+  category: string | null;
+  webhookSubscribed: boolean;
+  connectedAt: string;
+}
+
 interface WorkspaceMembersData {
   currentUserRole: "OWNER" | "ADMIN" | "MEMBER";
   members: Array<{
@@ -56,14 +65,19 @@ export default function SettingsPage() {
   const [inviteRole, setInviteRole] = useState<"ADMIN" | "MEMBER">("MEMBER");
   const [memberError, setMemberError] = useState<string | null>(null);
 
+  const [facebookPages, setFacebookPages] = useState<FacebookPageRow[]>([]);
+
   useEffect(() => {
     Promise.all([
       fetch("/api/dashboard/stats").then((res) => res.json()),
       fetch("/api/workspace/members").then((res) => res.json()),
+      fetch("/api/facebook/pages").then((res) => res.json()),
     ])
-      .then(([statsPayload, membersPayload]) => {
+      .then(([statsPayload, membersPayload, facebookPayload]) => {
         if (statsPayload.success) setData(statsPayload.data);
         if (membersPayload.success) setMembersData(membersPayload.data);
+        if (facebookPayload.success)
+          setFacebookPages(facebookPayload.data.pages ?? []);
       })
       .finally(() => setLoading(false));
   }, []);
@@ -214,6 +228,47 @@ export default function SettingsPage() {
             className="px-4 py-2 rounded text-sm font-medium transition-colors bg-accent text-white hover:bg-accent-hover"
           >
             {accounts.length > 0 ? "Connect another account" : "Connect Instagram"}
+          </a>
+        </div>
+      </section>
+
+      <section className="panel rounded p-4 sm:p-6">
+        <h2 className="text-base font-semibold mb-6">Facebook Pages</h2>
+
+        <div className="space-y-3">
+          {facebookPages.length === 0 && (
+            <p className="text-sm text-muted">
+              Connect your Facebook Pages so comments on Page posts get the
+              same keyword replies as Instagram. One connection covers every
+              Page you manage.
+            </p>
+          )}
+          {facebookPages.map((page) => (
+            <div
+              key={page.id}
+              className="flex flex-col gap-2 rounded border border-border bg-surface/70 p-4 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div>
+                <p className="text-sm font-semibold text-foreground">
+                  {page.name}
+                </p>
+                <p className="mt-1 text-xs text-muted">
+                  {page.category ?? "Page"} ·{" "}
+                  {page.webhookSubscribed ? "Webhook ready" : "Webhook pending"}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-6 pt-4 border-t border-border flex gap-3">
+          <a
+            href="/api/facebook/connect"
+            className="px-4 py-2 rounded text-sm font-medium transition-colors bg-accent text-white hover:bg-accent-hover"
+          >
+            {facebookPages.length > 0
+              ? "Reconnect Facebook"
+              : "Connect Facebook"}
           </a>
         </div>
       </section>
