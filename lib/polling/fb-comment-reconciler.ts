@@ -106,10 +106,14 @@ export async function reconcileFacebookComments(): Promise<void> {
         }
 
         const needsAction = comments.filter((c) => {
+          // Facebook hides user identities on comment READS (webhooks carry
+          // them; the API often returns no `from` for people who never used
+          // the app). That does NOT block delivery: a private reply targets
+          // the comment_id, not the person. Only the Page's own comments are
+          // skipped — and those always carry attribution, so an unattributed
+          // comment is guaranteed not ours.
           const authorId = c.from?.id;
-          // A comment with no author is one the token cannot attribute (privacy
-          // rules); without an author there is nobody to DM.
-          if (!authorId || authorId === page.pageId) return false;
+          if (authorId === page.pageId) return false;
 
           const text = c.message ?? "";
           const anyMatch = campaigns.some((campaign) =>
@@ -161,7 +165,9 @@ export async function reconcileFacebookComments(): Promise<void> {
             pageId: page.pageId,
             commentId: c.id,
             commentText: c.message ?? "",
-            commenterId: c.from!.id,
+            // Synthetic id when reads hide the author; delivery keys off the
+            // comment id, and DmLog dedup keys off (automationId, commentId).
+            commenterId: c.from?.id ?? `fb-anon:${c.id}`,
             commenterName: c.from?.name,
             postId: post.id,
             source: "POLLING",
