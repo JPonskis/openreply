@@ -1,6 +1,7 @@
 import { createDMWorker } from "@/lib/queue/dm-worker";
 import { recordWorkerHeartbeat } from "@/lib/ops/worker-health";
 import { reconcileComments } from "@/lib/polling/comment-reconciler";
+import { reconcileFacebookComments } from "@/lib/polling/fb-comment-reconciler";
 import os from "node:os";
 
 const worker = createDMWorker();
@@ -36,6 +37,12 @@ async function poll() {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error("[DM Worker] Comment reconciliation failed:", message);
+  }
+  try {
+    await reconcileFacebookComments();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error("[DM Worker] FB comment reconciliation failed:", message);
   }
 }
 

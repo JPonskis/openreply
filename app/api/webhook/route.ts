@@ -3,12 +3,17 @@ import { prisma } from "@/lib/db/client";
 import { getDMQueue } from "@/lib/queue/client";
 import {
   parseCommentEvents,
+  parseFacebookCommentEvents,
   parseMessageEvents,
   parsePostbackEvents,
   parseReadEvents,
   verifyWebhookSignature,
 } from "@/lib/meta/webhook";
-import { MESSAGE_JOB_NAME, POSTBACK_JOB_NAME } from "@/lib/queue/client";
+import {
+  FB_COMMENT_JOB_NAME,
+  MESSAGE_JOB_NAME,
+  POSTBACK_JOB_NAME,
+} from "@/lib/queue/client";
 import { Prisma } from "@/app/generated/prisma/client";
 
 const OPENING_DM_READ_FALLBACK_DELAY_MS = 5 * 60 * 1000;
@@ -111,6 +116,44 @@ export async function POST(request: NextRequest) {
         await prisma.webhookEvent.update({
           where: { id: webhookEvent.id },
           data: { workspaceId: account.workspaceId },
+        });
+      }
+    }
+
+    // Facebook Page comments → same campaign matching, delivered over
+    // Messenger with the Page token.
+    const fbCommentEvents = parseFacebookCommentEvents(
+      payload as Parameters<typeof parseFacebookCommentEvents>[0]
+    );
+
+    for (const event of fbCommentEvents) {
+      const page = await prisma.facebookPage.findUnique({
+        where: { pageId: event.pageId },
+        select: { workspaceId: true },
+      });
+
+      await queue.add(
+        FB_COMMENT_JOB_NAME,
+        {
+          pageId: event.pageId,
+          commentId: event.commentId,
+          commentText: event.commentText,
+          commenterId: event.commenterId,
+          commenterName: event.commenterName,
+          postId: event.postId,
+          source: "WEBHOOK",
+        },
+        {
+          // Facebook comment ids contain "_", which BullMQ allows; ":" never
+          // appears in them.
+          jobId: `fbcomment_${event.pageId}_${event.commentId}`,
+        }
+      );
+
+      if (page) {
+        await prisma.webhookEvent.update({
+          where: { id: webhookEvent.id },
+          data: { workspaceId: page.workspaceId },
         });
       }
     }

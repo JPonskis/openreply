@@ -66,15 +66,31 @@ export interface ProcessMessageJob {
   senderId: string;
 }
 
+// A comment on a connected Facebook Page's post. Matched against the same
+// campaigns as Instagram comments; delivered as a Messenger private reply
+// with the Page's token.
+export interface ProcessFbCommentJob {
+  pageId: string;
+  commentId: string;
+  commentText: string;
+  commenterId: string;
+  commenterName?: string;
+  postId: string;
+  requeueAttempt?: number;
+  source?: CommentSource;
+}
+
 export type DmQueueJob =
   | ProcessCommentJob
   | ProcessPostbackJob
   | ProcessFollowUpJob
-  | ProcessMessageJob;
+  | ProcessMessageJob
+  | ProcessFbCommentJob;
 
 export const POSTBACK_JOB_NAME = "process-postback";
 export const FOLLOWUP_JOB_NAME = "process-followup";
 export const MESSAGE_JOB_NAME = "process-message";
+export const FB_COMMENT_JOB_NAME = "process-fb-comment";
 
 let dmQueue: Queue<DmQueueJob> | null = null;
 
