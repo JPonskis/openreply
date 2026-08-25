@@ -71,6 +71,7 @@ async function checkOps() {
       dmFailed24h,
       publicReplyErrors24h,
       webhookEvents24h,
+      sweepErrors24h,
       accounts,
       fbPages,
     ] = await Promise.all([
@@ -84,6 +85,13 @@ async function checkOps() {
         where: { publicReplyError: { not: null }, updatedAt: { gte: dayAgo } },
       }),
       prisma.webhookEvent.count({ where: { createdAt: { gte: dayAgo } } }),
+      prisma.operationalEvent.count({
+        where: {
+          level: { in: ["WARNING", "ERROR"] },
+          message: { contains: "sweep" },
+          createdAt: { gte: dayAgo },
+        },
+      }),
       prisma.instagramAccount.findMany({
         select: { tokenExpiresAt: true },
       }),
@@ -105,6 +113,7 @@ async function checkOps() {
       dmFailed24h,
       publicReplyErrors24h,
       webhookEvents24h,
+      sweepErrors24h,
       igAccounts: accounts.length,
       fbPages,
       igTokenDaysRemaining,
