@@ -69,9 +69,29 @@ Health check (worker, db, redis, queue in one shot):
 - Polling reconciler runs inside the Railway worker every 5 min (catches
   comments the webhook missed).
 
-## Phase 2 — Facebook Pages fork (scoped, not built)
+## Phase 2 — Facebook Pages lane (LIVE 2026-08-25)
 
-Add `object: "page"` webhook branch + FB client (private replies via
-`/{page-id}/messages` with `recipient: {comment_id}`) + Page OAuth. In the
-Meta app: add use case "Engage with customers on Messenger", subscribe Page
-webhooks (`feed`). Scope: 2–4 days. See conversation notes 2026-08-24.
+Built and live-verified the same night: a real commenter ("Qualify" on a
+Benefitsusa Page post) got the public reply + Messenger DM within 5s of
+commenting. Both Pages connected (Benefitsusa 1061951727001979, Coveredusa
+1067601133110947), webhooks subscribed, tokens encrypted at rest.
+
+How it works: same 14 campaigns cover both platforms (platform is a delivery
+detail). `object:"page"` feed webhooks + a per-Page polling sweep enqueue
+`process-fb-comment` jobs; the worker matches workspace campaigns and sends
+via the Page token (Messenger button template, inline-link fallback).
+DmLog rows carry `platform: "facebook"`.
+
+Meta-console facts that cost time, recorded so they never cost it again:
+- Page permissions are NOT available until the FB use cases are added
+  ("Engage with customers on Messenger" + "Manage everything on your Page"),
+  and three of them (pages_read_engagement / manage_engagement /
+  read_user_content) need explicit per-permission "Add" inside the Pages use
+  case — one shows a confirmation modal that silently swallows the click.
+- The standalone Webhooks console page doesn't exist for this app type; the
+  app-level Page subscription was created via Graph API:
+  POST /{app-id}/subscriptions (app token "id|secret"), object=page,
+  fields=feed — verified instantly against our live endpoint.
+- FB OAuth redirect lives in Facebook Login for Business → Settings →
+  Valid OAuth Redirect URIs: /api/facebook/callback.
+- Env: FACEBOOK_APP_ID=1918526319127174 on Vercel + Railway worker.
