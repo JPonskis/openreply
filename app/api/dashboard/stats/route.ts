@@ -32,6 +32,15 @@ export async function GET(request: NextRequest) {
   const accountFilter = selectedAccountId
     ? { instagramAccountId: selectedAccountId }
     : {};
+  // Platform toggle: "instagram" | "facebook", or absent for everything.
+  // Applies to DM-log-derived numbers. Link clicks are platform-blind (the
+  // same tracked URL serves both platforms), so click counts stay global.
+  const requestedPlatform = request.nextUrl.searchParams.get("platform");
+  const selectedPlatform =
+    requestedPlatform === "instagram" || requestedPlatform === "facebook"
+      ? requestedPlatform
+      : null;
+  const platformFilter = selectedPlatform ? { platform: selectedPlatform } : {};
 
   const [
     workspace,
@@ -91,6 +100,7 @@ export async function GET(request: NextRequest) {
         status: "SENT",
         createdAt: { gte: todayStart },
         ...accountFilter,
+        ...platformFilter,
       },
     }),
     prisma.dmLog.count({
@@ -99,6 +109,7 @@ export async function GET(request: NextRequest) {
         status: "SENT",
         createdAt: { gte: weekStart },
         ...accountFilter,
+        ...platformFilter,
       },
     }),
     prisma.dmLog.count({
@@ -107,14 +118,20 @@ export async function GET(request: NextRequest) {
         status: "SENT",
         createdAt: { gte: monthStart },
         ...accountFilter,
+        ...platformFilter,
       },
     }),
     prisma.dmLog.count({
-      where: { workspaceId, status: "SENT", ...accountFilter },
+      where: { workspaceId, status: "SENT", ...accountFilter, ...platformFilter },
     }),
     prisma.dmLog.groupBy({
       by: ["status"],
-      where: { workspaceId, createdAt: { gte: monthStart }, ...accountFilter },
+      where: {
+        workspaceId,
+        createdAt: { gte: monthStart },
+        ...accountFilter,
+        ...platformFilter,
+      },
       _count: { _all: true },
     }),
     prisma.linkClick.count({
@@ -123,11 +140,16 @@ export async function GET(request: NextRequest) {
     prisma.linkClick.count({ where: { workspaceId, ...accountFilter } }),
     prisma.dmLog.groupBy({
       by: ["matchedKeyword"],
-      where: { workspaceId, matchedKeyword: { not: null }, ...accountFilter },
+      where: {
+        workspaceId,
+        matchedKeyword: { not: null },
+        ...accountFilter,
+        ...platformFilter,
+      },
       _count: { _all: true },
     }),
     prisma.dmLog.findMany({
-      where: { workspaceId, ...accountFilter },
+      where: { workspaceId, ...accountFilter, ...platformFilter },
       orderBy: { createdAt: "desc" },
       take: 10,
       include: {
@@ -143,7 +165,7 @@ export async function GET(request: NextRequest) {
       : Promise.resolve(null),
     // Distinct people who have interacted, counted as "contacts".
     prisma.dmLog.findMany({
-      where: { workspaceId, ...accountFilter },
+      where: { workspaceId, ...accountFilter, ...platformFilter },
       distinct: ["commenterId"],
       select: { commenterId: true },
     }),
@@ -162,6 +184,7 @@ export async function GET(request: NextRequest) {
         status: "SENT",
         createdAt: { gte: dayStart, lt: dayEnd },
         ...accountFilter,
+        ...platformFilter,
       },
     });
 
@@ -198,6 +221,7 @@ export async function GET(request: NextRequest) {
       instagramAccount,
       instagramAccounts,
       selectedInstagramAccountId: selectedAccountId,
+      selectedPlatform,
       totalAutomations,
       activeAutomations,
       dmsSentToday,

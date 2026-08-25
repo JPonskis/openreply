@@ -8,6 +8,10 @@
 
 import { useEffect, useState } from "react";
 import AccountSelect, { type AccountOption } from "@/components/account-select";
+import PlatformToggle, {
+  PlatformBadge,
+  type PlatformFilter,
+} from "@/components/platform-toggle";
 import StatCard from "@/components/stat-card";
 import StatusBadge from "@/components/status-badge";
 
@@ -34,6 +38,7 @@ interface DashboardStats {
     commenterName: string | null;
     commentText: string;
     status: string;
+    platform?: string;
     createdAt: string;
     automation: { name: string };
     instagramAccount?: { username: string };
@@ -44,11 +49,15 @@ export default function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedAccountId, setSelectedAccountId] = useState("all");
+  const [platform, setPlatform] = useState<PlatformFilter>("all");
 
   useEffect(() => {
     const params = new URLSearchParams();
     if (selectedAccountId !== "all") {
       params.set("instagramAccountId", selectedAccountId);
+    }
+    if (platform !== "all") {
+      params.set("platform", platform);
     }
 
     fetch(`/api/dashboard/stats${params.size ? `?${params}` : ""}`)
@@ -58,7 +67,12 @@ export default function DashboardPage() {
       })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [selectedAccountId]);
+  }, [selectedAccountId, platform]);
+
+  function handlePlatformChange(next: PlatformFilter) {
+    setLoading(true);
+    setPlatform(next);
+  }
 
   function handleAccountChange(accountId: string) {
     setLoading(true);
@@ -105,13 +119,16 @@ export default function DashboardPage() {
             </a>
           </p>
         </div>
-        {stats && stats.instagramAccounts.length > 1 && (
-          <AccountSelect
-            accounts={stats.instagramAccounts}
-            value={selectedAccountId}
-            onChange={handleAccountChange}
-          />
-        )}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <PlatformToggle value={platform} onChange={handlePlatformChange} />
+          {stats && stats.instagramAccounts.length > 1 && (
+            <AccountSelect
+              accounts={stats.instagramAccounts}
+              value={selectedAccountId}
+              onChange={handleAccountChange}
+            />
+          )}
+        </div>
       </div>
 
       {/* Stat Cards */}
@@ -123,7 +140,10 @@ export default function DashboardPage() {
         <StatCard label="DMs Sent" value={stats?.dmsSentMonth ?? 0} />
         <StatCard label="Skipped" value={stats?.dmsSkippedMonth ?? 0} />
         <StatCard label="Failed" value={stats?.dmsFailedMonth ?? 0} />
-        <StatCard label="Clicks" value={stats?.clicksThisMonth ?? 0} />
+        <StatCard
+          label={platform === "all" ? "Clicks" : "Clicks (all platforms)"}
+          value={stats?.clicksThisMonth ?? 0}
+        />
         <StatCard label="CTR" value={`${stats?.ctrThisMonth ?? 0}%`} />
       </div>
 
@@ -180,8 +200,12 @@ export default function DashboardPage() {
                 className="flex items-center justify-between gap-3 py-2 border-b border-border last:border-0"
               >
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-foreground truncate">
-                    @{log.commenterName ?? "unknown"}
+                  <p className="flex items-center gap-2 text-sm font-medium text-foreground truncate">
+                    <PlatformBadge platform={log.platform} />
+                    <span className="truncate">
+                      {log.platform === "facebook" ? "" : "@"}
+                      {log.commenterName ?? "unknown"}
+                    </span>
                   </p>
                   <p className="text-xs text-muted truncate">
                     {log.instagramAccount

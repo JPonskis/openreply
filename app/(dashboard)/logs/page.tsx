@@ -8,6 +8,10 @@
 
 import { useEffect, useState, useCallback } from "react";
 import AccountSelect, { type AccountOption } from "@/components/account-select";
+import PlatformToggle, {
+  PlatformBadge,
+  type PlatformFilter,
+} from "@/components/platform-toggle";
 import StatusBadge from "@/components/status-badge";
 
 interface DmLog {
@@ -16,6 +20,7 @@ interface DmLog {
   commenterName: string | null;
   commentText: string;
   status: string;
+  platform?: string;
   errorMessage: string | null;
   createdAt: string;
   automation: { name: string; keywords: string[] };
@@ -46,6 +51,7 @@ export default function LogsPage() {
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [accounts, setAccounts] = useState<AccountOption[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState("all");
+  const [platform, setPlatform] = useState<PlatformFilter>("all");
   const [page, setPage] = useState(1);
 
   const fetchLogs = useCallback(async () => {
@@ -55,6 +61,7 @@ export default function LogsPage() {
       if (selectedAccountId !== "all") {
         params.set("instagramAccountId", selectedAccountId);
       }
+      if (platform !== "all") params.set("platform", platform);
 
       const res = await fetch(`/api/logs?${params}`);
       const data = await res.json();
@@ -67,7 +74,7 @@ export default function LogsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, statusFilter, selectedAccountId]);
+  }, [page, statusFilter, selectedAccountId, platform]);
 
   useEffect(() => {
     fetch("/api/dashboard/stats")
@@ -97,6 +104,12 @@ export default function LogsPage() {
     setPage(1);
   }
 
+  function handlePlatformChange(next: PlatformFilter) {
+    setLoading(true);
+    setPlatform(next);
+    setPage(1);
+  }
+
   return (
     <div className="space-y-6">
       {/* Filters */}
@@ -119,13 +132,16 @@ export default function LogsPage() {
             </button>
           ))}
         </div>
-        {accounts.length > 1 && (
-          <AccountSelect
-            accounts={accounts}
-            value={selectedAccountId}
-            onChange={handleAccountChange}
-          />
-        )}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <PlatformToggle value={platform} onChange={handlePlatformChange} />
+          {accounts.length > 1 && (
+            <AccountSelect
+              accounts={accounts}
+              value={selectedAccountId}
+              onChange={handleAccountChange}
+            />
+          )}
+        </div>
       </div>
 
       {/* Table */}
@@ -167,8 +183,10 @@ export default function LogsPage() {
                 logs.map((log) => (
                   <tr key={log.id} className="hover:bg-surface-hover/50 transition-colors">
                     <td className="px-4 py-4 sm:px-6">
-                      <span className="font-medium text-foreground">
-                        @{log.commenterName ?? log.commenterId.slice(0, 8)}
+                      <span className="flex items-center gap-2 font-medium text-foreground">
+                        <PlatformBadge platform={log.platform} />
+                        {log.platform === "facebook" ? "" : "@"}
+                        {log.commenterName ?? log.commenterId.slice(0, 8)}
                       </span>
                     </td>
                     <td className="px-4 py-4 max-w-[200px] sm:px-6">
@@ -178,7 +196,11 @@ export default function LogsPage() {
                       <span className="text-muted">{log.automation.name}</span>
                     </td>
                     <td className="px-4 py-4 sm:px-6">
-                      <span className="text-muted">@{log.instagramAccount.username}</span>
+                      <span className="text-muted">
+                        {log.platform === "facebook"
+                          ? "Facebook Page"
+                          : `@${log.instagramAccount.username}`}
+                      </span>
                     </td>
                     <td className="px-4 py-4 sm:px-6">
                       <StatusBadge status={log.status} />

@@ -20,6 +20,7 @@ export async function GET(request: NextRequest) {
   );
   const status = searchParams.get("status");
   const instagramAccountId = searchParams.get("instagramAccountId");
+  const platform = searchParams.get("platform");
   const skip = (page - 1) * limit;
   const parsedStatus =
     status && Object.values(DmStatus).includes(status as DmStatus)
@@ -31,6 +32,9 @@ export async function GET(request: NextRequest) {
     ...(parsedStatus ? { status: parsedStatus } : {}),
     ...(instagramAccountId && instagramAccountId !== "all"
       ? { instagramAccountId }
+      : {}),
+    ...(platform === "instagram" || platform === "facebook"
+      ? { platform }
       : {}),
   };
 
