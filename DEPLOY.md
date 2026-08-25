@@ -56,8 +56,13 @@ Health check (worker, db, redis, queue in one shot):
 
 ## Ops
 
-- Test campaign "TEST pipeline check" (keyword TEST, latest post, DMs quiz
-  link). Pause/delete from /campaigns after verification.
+- **14 production campaigns live since 2026-08-25** — one per TOOL_WORDS.md
+  registry word, any-post, whole-word, case-insensitive, public replies ON
+  (20 rotating variants each: 19 common + 1 flavored). DM copy approved by
+  Jacob 8/25. Created by scratchpad ship_campaigns.js (raw inserts modeled on
+  a UI-created row); edit them in the dashboard from here on.
+- Test campaign "TEST pipeline check" verified the full loop 8/25 (comment →
+  webhook → DM SENT → link click tracked), then deactivated.
 - Upstream sync: `git fetch upstream && git merge upstream/main` then redeploy
   both (upstream = diwenne/openreply; maintainer ships fixes near-daily).
 - Vercel crons (vercel.json): token refresh daily 5:00 UTC (CRON_SECRET).
