@@ -95,3 +95,35 @@ Meta-console facts that cost time, recorded so they never cost it again:
 - FB OAuth redirect lives in Facebook Login for Business → Settings →
   Valid OAuth Redirect URIs: /api/facebook/callback.
 - Env: FACEBOOK_APP_ID=1918526319127174 on Vercel + Railway worker.
+
+## Keyword matching — how strict a comment has to be (2026-08-28)
+
+Campaigns fire on `Automation.matchMode`, not on a bare "does the word appear" test:
+
+| mode | fires on | use for |
+|---|---|---|
+| `exact` | the keyword alone | nothing today; strictest |
+| `standalone` **(default)** | keyword + punctuation, emoji, politeness | all 14 production campaigns |
+| `anywhere` | keyword as a whole word mid-sentence | opt-in only; the old behaviour |
+| `contains` | substring ("linking" matches "link") | rarely what you want |
+
+**Why the default is `standalone`.** The trigger words are ordinary English (BILL, PLAN,
+FOOD, COVERAGE) and every campaign runs on every post, so `anywhere` DM'd people who were
+only *talking* — and posted a public reply under their comment, which is what the audience
+sees. It sent three unwanted DMs in the first five days, one of them under a comment
+criticizing our accuracy. Details in `memory/error-log.md` (2026-08-28).
+
+**Changing it:** dashboard → the campaign → "And this comment has" → the two radios under
+the keyword box. No deploy needed.
+
+**Before changing the matcher, replay it against real text — never invented examples:**
+```bash
+npx tsx scripts/replay-corpus.ts <corpus.json>       # prints anywhere vs standalone disagreements
+DATABASE_URL=<prod> npx tsx scripts/verify-match-mode.ts   # asserts every live campaign is strict
+```
+`scripts/verify-match-mode.ts` exits 1 if any live campaign fires mid-sentence, and it runs
+the reconciler's exact `select`, so it also catches a schema/client drift that would make the
+sweeps throw.
+
+**The guard:** `/api/health` `ops.looseMatchCampaigns` (setting) and `ops.sentenceDms24h`
+(what actually shipped) should both read 0. Watchdog rules 10 and 11 alert on either.
