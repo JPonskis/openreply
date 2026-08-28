@@ -55,7 +55,7 @@ export async function reconcileFacebookComments(): Promise<void> {
           id: true,
           keywords: true,
           matchAnyWord: true,
-          wholeWordMatch: true,
+          matchMode: true,
           publicReplyEnabled: true,
         },
       });
@@ -119,7 +119,7 @@ export async function reconcileFacebookComments(): Promise<void> {
           const anyMatch = campaigns.some((campaign) =>
             campaign.matchAnyWord
               ? true
-              : matchKeywords(text, campaign.keywords, campaign.wholeWordMatch)
+              : matchKeywords(text, campaign.keywords, campaign.matchMode)
                   .matched
           );
           if (!anyMatch) return false;

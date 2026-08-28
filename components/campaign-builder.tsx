@@ -23,6 +23,11 @@ import {
   IMPORT_ACCOUNT_KEY,
   type ImportRow,
 } from "@/lib/import-queue";
+import {
+  DEFAULT_MATCH_MODE,
+  toMatchMode,
+  type MatchMode as KeywordMatchMode,
+} from "@/lib/utils/keyword-matcher";
 
 type TriggerScope = "specific" | "any" | "next";
 type MatchMode = "specific" | "any";
@@ -35,6 +40,7 @@ interface LoadedCampaign {
   pendingNextReel: boolean;
   matchAnyPost: boolean;
   keywords: string[];
+  matchMode?: string | null;
   matchAnyWord: boolean;
   dmTriggerEnabled: boolean;
   dmMessage: string;
@@ -156,6 +162,8 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
   const [usedPosts, setUsedPosts] = useState<Record<string, string>>({});
 
   const [matchMode, setMatchMode] = useState<MatchMode>("specific");
+  const [strictness, setStrictness] =
+    useState<KeywordMatchMode>(DEFAULT_MATCH_MODE);
   const [keywordText, setKeywordText] = useState("");
   const [dmTriggerEnabled, setDmTriggerEnabled] = useState(false);
 
@@ -258,6 +266,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
         setPostUrl(c.postUrl);
         setMatchMode(c.matchAnyWord ? "any" : "specific");
         setKeywordText(c.keywords.join(", "));
+        setStrictness(toMatchMode(c.matchMode));
         setDmTriggerEnabled(c.dmTriggerEnabled ?? false);
         setPublicReplyEnabled(c.publicReplyEnabled);
         setPublicReplyMessages(
@@ -405,6 +414,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
       matchAnyPost: triggerScope === "any",
       pendingNextReel: triggerScope === "next",
       matchAnyWord: matchMode === "any",
+      matchMode: strictness,
       keywords: matchMode === "any" ? [] : keywords,
       dmTriggerEnabled,
       dmMessage,
@@ -714,6 +724,25 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                 className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
               />
               <p className="text-xs text-muted">Use commas to separate words</p>
+              <div className="space-y-1 pt-1">
+                <Radio
+                  checked={strictness === "standalone"}
+                  onSelect={() => setStrictness("standalone")}
+                >
+                  only when the word is the whole comment
+                </Radio>
+                <Radio
+                  checked={strictness === "anywhere"}
+                  onSelect={() => setStrictness("anywhere")}
+                >
+                  anywhere in the comment
+                </Radio>
+                <p className="text-xs text-muted">
+                  {strictness === "standalone"
+                    ? "\u201cBILL\u201d and \u201cBILL please\u201d fire. \u201cmy medical bill is huge\u201d does not."
+                    : "Fires on any comment containing the word, including mid-sentence. Expect false positives on common words."}
+                </p>
+              </div>
             </div>
           )}
           <Radio

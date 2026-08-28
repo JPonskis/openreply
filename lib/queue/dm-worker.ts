@@ -245,7 +245,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
       : matchKeywords(
           commentText,
           automation.keywords,
-          automation.wholeWordMatch
+          automation.matchMode
         );
 
     if (!matchResult.matched) {
@@ -978,7 +978,7 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
       : matchKeywords(
           messageText,
           automation.keywords,
-          automation.wholeWordMatch
+          automation.matchMode
         );
 
     if (!matchResult.matched) continue;
@@ -1266,7 +1266,7 @@ async function processFbComment(job: Job<ProcessFbCommentJob>): Promise<void> {
       : matchKeywords(
           commentText,
           automation.keywords,
-          automation.wholeWordMatch
+          automation.matchMode
         );
 
     if (!matchResult.matched) continue;

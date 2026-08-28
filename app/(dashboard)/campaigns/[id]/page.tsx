@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import CampaignPreview, { type PreviewTab } from "@/components/campaign-preview";
+import { toMatchMode } from "@/lib/utils/keyword-matcher";
 
 interface Campaign {
   id: string;
@@ -22,6 +23,7 @@ interface Campaign {
   matchAnyPost: boolean;
   keywords: string[];
   matchAnyWord: boolean;
+  matchMode: string;
   dmTriggerEnabled: boolean;
   dmMessage: string;
   openingDmEnabled: boolean;
@@ -212,6 +214,13 @@ export default function CampaignDetailPage() {
 
         <Summary title="And this comment has">
           <FieldBox>{matchText}</FieldBox>
+          {!campaign.matchAnyWord && (
+            <p className="text-xs text-muted">
+              {toMatchMode(campaign.matchMode) === "standalone"
+                ? "Only fires when the word is the whole comment."
+                : "Fires anywhere in the comment, including mid-sentence."}
+            </p>
+          )}
           {campaign.dmTriggerEnabled && (
             <p className="text-xs text-muted">
               Also replies when someone DMs{" "}

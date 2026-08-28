@@ -34,6 +34,7 @@ interface Campaign {
   followPromptButtonLabel: string | null;
   isActive: boolean;
   wholeWordMatch: boolean;
+  matchMode: string;
   instagramAccountId: string;
   instagramAccount: {
     username: string;
@@ -266,6 +267,7 @@ export default function CampaignsPage() {
           followPromptMessage: auto.followPromptMessage,
           followPromptButtonLabel: auto.followPromptButtonLabel,
           wholeWordMatch: auto.wholeWordMatch,
+          matchMode: auto.matchMode,
           isActive: false,
         }),
       });

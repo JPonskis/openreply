@@ -142,6 +142,7 @@ const mockAutomation = {
   dmMessage: "Hey {username}! Here is the link: https://example.com",
   isActive: true,
   wholeWordMatch: true,
+  matchMode: "standalone",
   matchAnyPost: false,
   matchAnyWord: false,
   openingDmEnabled: false,
@@ -335,7 +336,7 @@ describe("DM Worker — Full Pipeline", () => {
     expect(mockMatchKeywords).toHaveBeenCalledWith(
       "I want the LINK!",
       ["LINK", "PRICE"],
-      true
+      "standalone"
     );
     expect(mockReserveWorkspaceDMSend).toHaveBeenCalledWith("workspace_123");
     expect(mockReserveDMSlot).toHaveBeenCalledWith("ig_456", 0);

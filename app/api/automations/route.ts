@@ -10,6 +10,11 @@ import {
   canManageWorkspace,
   getCurrentWorkspaceContext,
 } from "@/lib/workspace-access";
+import {
+  DEFAULT_MATCH_MODE,
+  MATCH_MODES,
+  type MatchMode,
+} from "@/lib/utils/keyword-matcher";
 
 // This list is read-your-writes (created/imported campaigns must show up
 // immediately), so never cache it at the route or CDN layer.
@@ -60,6 +65,7 @@ const createAutomationSchema = z
     secondaryButtonLabel: z.string().max(20).optional().nullable(),
     isActive: z.boolean().optional().default(true),
     wholeWordMatch: z.boolean().optional().default(true),
+    matchMode: z.enum(MATCH_MODES as [MatchMode, ...MatchMode[]]).optional(),
   })
   // A campaign must target a specific post, any post, or the next reel.
   .refine(
@@ -106,6 +112,7 @@ const updateAutomationSchema = z.object({
   publicReplyMessages: z.array(z.string().max(1000)).max(10).optional(),
   isActive: z.boolean().optional(),
   wholeWordMatch: z.boolean().optional(),
+  matchMode: z.enum(MATCH_MODES as [MatchMode, ...MatchMode[]]).optional(),
   reportShareEnabled: z.boolean().optional(),
   // Empty string clears the tracked link; a URL updates/creates it; undefined
   // leaves it unchanged.
@@ -427,6 +434,7 @@ export async function POST(request: NextRequest) {
         : null,
       isActive: parsed.data.isActive,
       wholeWordMatch: parsed.data.wholeWordMatch,
+      matchMode: parsed.data.matchMode ?? DEFAULT_MATCH_MODE,
       workspaceId,
       instagramAccountId: instagramAccount.id,
       reportShareSlug: generateReportShareSlug(),

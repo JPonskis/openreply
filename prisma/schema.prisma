@@ -221,6 +221,11 @@ model Automation {
   publicReplyMessages String[] @default([])
   isActive       Boolean @default(true)
   wholeWordMatch Boolean @default(true)
+  // How strictly a comment has to be a REQUEST before it fires:
+  // "exact" | "standalone" | "anywhere" | "contains". See lib/utils/keyword-matcher.
+  // Defaults to "standalone" — "anywhere" cannot tell "BILL" from "my medical
+  // bill is huge", so it DMs people who were only talking, which reads as spam.
+  matchMode      String  @default("standalone")
   reportShareSlug    String? @unique
   reportShareEnabled Boolean @default(true)
 
