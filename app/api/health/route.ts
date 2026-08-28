@@ -74,6 +74,8 @@ async function checkOps() {
       sweepErrors24h,
       accounts,
       fbPages,
+      looseMatchCampaigns,
+      sentenceDmRows,
     ] = await Promise.all([
       prisma.dmLog.count({
         where: { status: "SENT", dmSentAt: { gte: dayAgo } },
@@ -96,6 +98,20 @@ async function checkOps() {
         select: { tokenExpiresAt: true },
       }),
       prisma.facebookPage.count(),
+      // Spam guard, read two independent ways so neither medium is trusted
+      // alone. Config: how many live campaigns are on a loose match mode that
+      // fires mid-sentence. Outcome: how many DMs actually went to a comment
+      // long enough to have been a sentence rather than a request. Under the
+      // default "standalone" mode both should sit at zero; either one climbing
+      // means people are being DM'd for talking, which reads as spam.
+      prisma.automation.count({
+        where: { isActive: true, matchAnyWord: false, matchMode: { notIn: ["standalone", "exact"] } },
+      }),
+      prisma.$queryRaw<{ count: bigint }[]>`
+        SELECT COUNT(*) AS count FROM "DmLog"
+        WHERE status = 'SENT' AND "dmSentAt" >= ${dayAgo}
+        AND array_length(regexp_split_to_array(btrim("commentText"), '[[:space:]]+'), 1) >= 10
+      `,
     ]);
 
     const soonest = accounts
@@ -117,6 +133,8 @@ async function checkOps() {
       igAccounts: accounts.length,
       fbPages,
       igTokenDaysRemaining,
+      looseMatchCampaigns,
+      sentenceDms24h: Number(sentenceDmRows[0]?.count ?? 0),
     };
   } catch (error) {
     return {
