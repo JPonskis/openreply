@@ -128,7 +128,7 @@ async function checkOps() {
     const failureReasons = Object.entries(
       dmFailureRows.reduce<Record<string, number>>((acc, row) => {
         const reason = (row.errorMessage ?? "Unknown error")
-          .replace(/\s*trace=\S+/g, "")
+          .replace(/\s*trace=[^\]\s]+/g, "")
           .replace(/\(\/v[\d.]+\/\d+\/[a-z_]+\)\s*/gi, "")
           .trim();
         acc[reason] = (acc[reason] ?? 0) + 1;
