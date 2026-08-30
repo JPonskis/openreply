@@ -76,6 +76,7 @@ async function checkOps() {
       fbPages,
       looseMatchCampaigns,
       sentenceDmRows,
+      dmFailureRows,
     ] = await Promise.all([
       prisma.dmLog.count({
         where: { status: "SENT", dmSentAt: { gte: dayAgo } },
@@ -112,7 +113,31 @@ async function checkOps() {
         WHERE status = 'SENT' AND "dmSentAt" >= ${dayAgo}
         AND array_length(regexp_split_to_array(btrim("commentText"), '[[:space:]]+'), 1) >= 10
       `,
+      // WHY the failures happened, not just how many. A bare count cannot tell
+      // "three people's accounts refuse message requests" (nothing to fix)
+      // from "the token died" (everything is down), so an alert built on the
+      // count alone always reads as the second one. Trace ids are stripped so
+      // identical refusals collapse into one row; no comment text, no user
+      // ids — this endpoint is unauthenticated.
+      prisma.dmLog.findMany({
+        where: { status: "FAILED", updatedAt: { gte: dayAgo } },
+        select: { errorMessage: true },
+      }),
     ]);
+
+    const failureReasons = Object.entries(
+      dmFailureRows.reduce<Record<string, number>>((acc, row) => {
+        const reason = (row.errorMessage ?? "Unknown error")
+          .replace(/\s*trace=\S+/g, "")
+          .replace(/\(\/v[\d.]+\/\d+\/[a-z_]+\)\s*/gi, "")
+          .trim();
+        acc[reason] = (acc[reason] ?? 0) + 1;
+        return acc;
+      }, {})
+    )
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([reason, count]) => ({ reason, count }));
 
     const soonest = accounts
       .map((a) => a.tokenExpiresAt?.getTime())
@@ -127,6 +152,8 @@ async function checkOps() {
       status: "ok" as const,
       dmSent24h,
       dmFailed24h,
+      dmAttempts24h: dmSent24h + dmFailed24h,
+      dmFailureReasons24h: failureReasons,
       publicReplyErrors24h,
       webhookEvents24h,
       sweepErrors24h,

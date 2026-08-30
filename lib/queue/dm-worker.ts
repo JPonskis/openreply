@@ -67,6 +67,33 @@ const NON_TEMPLATE_REJECTIONS = [
   /outside of allowed window/i,
   /invalid for a private reply/i,
   /requested user cannot be found/i,
+  // Recipient-side refusal: this person cannot receive a message request from
+  // the Page at all. Seen on Facebook 2026-08-30 as a bare "Invalid parameter"
+  // with sub=1893060, on 3 comments while 36 others on the same post, same
+  // campaign, same token went through. Meta does not document the subcode, so
+  // match it directly.
+  /\bsub=1893060\b/,
+];
+
+/**
+ * Is this error plausibly about the BUTTON TEMPLATE, such that resending the
+ * same content as plain text could work?
+ *
+ * Defaults to FALSE. It used to default to true — any error it did not
+ * recognise was assumed to be a template problem — which meant an unknown
+ * refusal got logged as "button template rejected", retried as text, and
+ * refused again for the same reason. The log named a cause that was never
+ * involved. An unknown error is not evidence of a template problem; it is
+ * evidence of nothing, and a guard that cannot say "I don't know" will always
+ * answer with its default.
+ */
+const TEMPLATE_REJECTIONS = [
+  /template/i,
+  /\bbutton\b/i,
+  /invalid keys/i,
+  /elements/i,
+  /\bpayload\b/i,
+  /\bwhitelist/i,
 ];
 
 function isTemplateRejection(error: unknown): boolean {
@@ -74,7 +101,79 @@ function isTemplateRejection(error: unknown): boolean {
     return false;
   }
   const message = error instanceof Error ? error.message : "";
-  return !NON_TEMPLATE_REJECTIONS.some((pattern) => pattern.test(message));
+  if (NON_TEMPLATE_REJECTIONS.some((pattern) => pattern.test(message))) {
+    return false;
+  }
+  return TEMPLATE_REJECTIONS.some((pattern) => pattern.test(message));
+}
+
+/**
+ * Post the campaign's public "sent!" reply under a comment.
+ *
+ * ORDERING LAW (2026-08-30): this runs only AFTER the DM has actually landed.
+ * It used to run first, "decoupled" so a DM failure could not suppress it —
+ * but every message in the pool CLAIMS DELIVERY ("sent!", "check your DMs").
+ * Posting it before the send meant that when Meta refused the DM we publicly
+ * told the commenter, under their own comment, to go read a message that did
+ * not exist. Three people got that on 2026-08-30 (FB sub=1893060, a
+ * recipient-side refusal). A public reply is a claim about a fact; never make
+ * the claim before the fact.
+ *
+ * Idempotent via publicReplySentAt, so the reconciler can come back and retry
+ * a reply whose DM already sent. A failure here is logged and swallowed: the
+ * DM is the deliverable, the reply is the receipt.
+ */
+async function postPublicReply(opts: {
+  automation: {
+    id: string;
+    publicReplyEnabled: boolean;
+    publicReplyMessage: string | null;
+    publicReplyMessages: string[];
+    trackedLinks: WorkerTrackedLink[];
+  };
+  commentId: string;
+  commenterName: string | null | undefined;
+  alreadyPosted: boolean;
+  send: (message: string) => Promise<unknown>;
+  label: string;
+}): Promise<void> {
+  const { automation, commentId, commenterName, alreadyPosted, send, label } =
+    opts;
+  if (!automation.publicReplyEnabled || alreadyPosted) return;
+
+  const replyPool =
+    automation.publicReplyMessages.length > 0
+      ? automation.publicReplyMessages
+      : automation.publicReplyMessage
+        ? [automation.publicReplyMessage]
+        : [];
+  if (replyPool.length === 0) return;
+
+  try {
+    const chosen = replyPool[Math.floor(Math.random() * replyPool.length)];
+    const publicReply = renderMessageWithTracking({
+      message: chosen,
+      commenterName,
+      trackedLinks: automation.trackedLinks,
+    });
+    await send(publicReply);
+    await prisma.dmLog.update({
+      where: {
+        automationId_commentId: { automationId: automation.id, commentId },
+      },
+      data: { publicReplySentAt: new Date(), publicReplyError: null },
+    });
+  } catch (error) {
+    console.error(`[DM Worker] ${label} failed:`, formatError(error));
+    await prisma.dmLog
+      .update({
+        where: {
+          automationId_commentId: { automationId: automation.id, commentId },
+        },
+        data: { publicReplyError: formatError(error) },
+      })
+      .catch(() => {});
+  }
 }
 
 type WorkerTrackedLink = {
@@ -364,53 +463,23 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
       });
     }
 
-    // Public reply leg — decoupled from the DM and posted first so a DM failure
-    // (e.g. a non-follower whose messaging is restricted) never suppresses it.
-    // Idempotent across retries via publicReplySentAt.
-    const replyPool =
-      automation.publicReplyMessages.length > 0
-        ? automation.publicReplyMessages
-        : automation.publicReplyMessage
-          ? [automation.publicReplyMessage]
-          : [];
-    if (
-      automation.publicReplyEnabled &&
-      replyPool.length > 0 &&
-      !existingLog?.publicReplySentAt
-    ) {
-      try {
-        const chosen = replyPool[Math.floor(Math.random() * replyPool.length)];
-        const publicReply = renderMessageWithTracking({
-          message: chosen,
-          commenterName,
-          trackedLinks: automation.trackedLinks,
-        });
-        await sendCommentReply(accessToken, commentId, publicReply);
-        await prisma.dmLog.update({
-          where: {
-            automationId_commentId: { automationId: automation.id, commentId },
-          },
-          data: { publicReplySentAt: new Date(), publicReplyError: null },
-        });
-      } catch (error) {
-        console.error(
-          "[DM Worker] Public comment reply failed:",
-          formatError(error)
-        );
-        await prisma.dmLog
-          .update({
-            where: {
-              automationId_commentId: { automationId: automation.id, commentId },
-            },
-            data: { publicReplyError: formatError(error) },
-          })
-          .catch(() => {});
-      }
-    }
+    // The public reply is posted AFTER the DM lands (see postPublicReply).
+    const replyToComment = (message: string) =>
+      sendCommentReply(accessToken, commentId, message);
 
-    // DM already sent on an earlier pass; the public reply retry above was all
-    // this run needed. Don't re-send the DM.
-    if (!needsDm) continue;
+    // DM already sent on an earlier pass and only the public reply is
+    // outstanding — post it and move on, without re-sending the DM.
+    if (!needsDm) {
+      await postPublicReply({
+        automation,
+        commentId,
+        commenterName,
+        alreadyPosted: Boolean(existingLog?.publicReplySentAt),
+        send: replyToComment,
+        label: "Public comment reply",
+      });
+      continue;
+    }
 
     // Meta allows exactly ONE private reply per comment, ever — across every
     // campaign. When several campaigns match the same comment (duplicated
@@ -663,6 +732,16 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           dmSentAt: new Date(),
           errorMessage: null,
         },
+      });
+
+      // The DM is now a fact, so the public receipt is safe to post.
+      await postPublicReply({
+        automation,
+        commentId,
+        commenterName,
+        alreadyPosted: Boolean(existingLog?.publicReplySentAt),
+        send: replyToComment,
+        label: "Public comment reply",
       });
     } catch (error) {
       await releaseWorkspaceDMReservation(
@@ -1316,50 +1395,23 @@ async function processFbComment(job: Job<ProcessFbCommentJob>): Promise<void> {
       });
     }
 
-    // Public reply first, decoupled from the DM, idempotent via
-    // publicReplySentAt — same contract as the Instagram lane.
-    const replyPool =
-      automation.publicReplyMessages.length > 0
-        ? automation.publicReplyMessages
-        : automation.publicReplyMessage
-          ? [automation.publicReplyMessage]
-          : [];
-    if (
-      automation.publicReplyEnabled &&
-      replyPool.length > 0 &&
-      !existingLog?.publicReplySentAt
-    ) {
-      try {
-        const chosen = replyPool[Math.floor(Math.random() * replyPool.length)];
-        const publicReply = renderMessageWithTracking({
-          message: chosen,
-          commenterName,
-          trackedLinks: automation.trackedLinks,
-        });
-        await sendFacebookCommentReply(pageToken, commentId, publicReply);
-        await prisma.dmLog.update({
-          where: {
-            automationId_commentId: { automationId: automation.id, commentId },
-          },
-          data: { publicReplySentAt: new Date(), publicReplyError: null },
-        });
-      } catch (error) {
-        console.error(
-          "[DM Worker] FB public comment reply failed:",
-          formatError(error)
-        );
-        await prisma.dmLog
-          .update({
-            where: {
-              automationId_commentId: { automationId: automation.id, commentId },
-            },
-            data: { publicReplyError: formatError(error) },
-          })
-          .catch(() => {});
-      }
-    }
+    // The public reply is posted AFTER the DM lands (see postPublicReply).
+    const replyToComment = (message: string) =>
+      sendFacebookCommentReply(pageToken, commentId, message);
 
-    if (!needsDm) continue;
+    // DM already sent on an earlier pass and only the public reply is
+    // outstanding — post it and move on, without re-sending the DM.
+    if (!needsDm) {
+      await postPublicReply({
+        automation,
+        commentId,
+        commenterName,
+        alreadyPosted: Boolean(existingLog?.publicReplySentAt),
+        send: replyToComment,
+        label: "FB public comment reply",
+      });
+      continue;
+    }
 
     // Meta allows one private reply per comment on Facebook too.
     const privateReplyUsedBy = await prisma.dmLog.findFirst({
@@ -1530,6 +1582,16 @@ async function processFbComment(job: Job<ProcessFbCommentJob>): Promise<void> {
           dmSentAt: new Date(),
           errorMessage: null,
         },
+      });
+
+      // The DM is now a fact, so the public receipt is safe to post.
+      await postPublicReply({
+        automation,
+        commentId,
+        commenterName,
+        alreadyPosted: Boolean(existingLog?.publicReplySentAt),
+        send: replyToComment,
+        label: "FB public comment reply",
       });
     } catch (error) {
       await releaseWorkspaceDMReservation(

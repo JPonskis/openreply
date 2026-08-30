@@ -15,6 +15,7 @@ const {
   mockQueueAdd,
   mockReserveWorkspaceDMSend,
   mockReleaseWorkspaceDMReservation,
+  mockSendCommentReply,
 } = vi.hoisted(() => ({
   mockPrisma: {
     automation: {
@@ -48,6 +49,7 @@ const {
   mockQueueAdd: vi.fn(),
   mockReserveWorkspaceDMSend: vi.fn(),
   mockReleaseWorkspaceDMReservation: vi.fn(),
+  mockSendCommentReply: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -62,7 +64,7 @@ vi.mock("@/lib/meta/client", () => ({
   sendDirectMessageWithButton: mockSendDirectMessageWithButton,
   sendDirectMessage: mockSendDirectMessage,
   sendDirectMessageWithLinkButton: mockSendDirectMessageWithLinkButton,
-  sendCommentReply: vi.fn(),
+  sendCommentReply: mockSendCommentReply,
   MetaApiError: class MetaApiError extends Error {
     code: number;
     constructor(
@@ -275,6 +277,7 @@ beforeEach(() => {
     message_id: "msg_006",
   });
   mockGetUserFollowStatus.mockResolvedValue(true);
+  mockSendCommentReply.mockResolvedValue({ id: "reply_001" });
 });
 
 describe("DM Worker — comments left on an ad", () => {
@@ -1116,5 +1119,179 @@ describe("DM Worker — DM keyword trigger", () => {
         create: expect.objectContaining({ status: "FAILED" }),
       })
     );
+  });
+});
+
+describe("DM Worker — the public reply is a receipt, not a promise", () => {
+  // Every message in a public-reply pool claims delivery ("sent!", "check your
+  // DMs"). Posting it before the send meant that when Meta refused the DM we
+  // publicly told the commenter to go read a message that did not exist.
+  // 2026-08-30: three people got exactly that.
+  const chatty = {
+    ...mockAutomation,
+    publicReplyEnabled: true,
+    publicReplyMessages: ["sent!", "check your DMs"],
+  };
+
+  beforeEach(() => {
+    mockPrisma.automation.findMany.mockResolvedValue([chatty]);
+  });
+
+  it("does not claim 'sent!' in public when the DM was refused", async () => {
+    mockSendPrivateReply.mockRejectedValue(
+      new Error(
+        "Invalid parameter (/v25.0/1061951727001979/messages) [code=100 sub=1893060 type=OAuthException]"
+      )
+    );
+    const processor = getProcessor();
+
+    await expect(processor(createMockJob())).rejects.toThrow();
+
+    expect(mockSendCommentReply).not.toHaveBeenCalled();
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "FAILED" }),
+      })
+    );
+  });
+
+  it("posts the public reply once the DM is a fact", async () => {
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockSendCommentReply).toHaveBeenCalledTimes(1);
+    const [, , text] = mockSendCommentReply.mock.calls[0];
+    expect(["sent!", "check your DMs"]).toContain(text);
+  });
+
+  it("sends the DM BEFORE the public reply, not after", async () => {
+    const order: string[] = [];
+    mockSendPrivateReply.mockImplementation(async () => {
+      order.push("dm");
+      return { recipient_id: "commenter_999", message_id: "m" };
+    });
+    mockSendCommentReply.mockImplementation(async () => {
+      order.push("public-reply");
+      return { id: "r" };
+    });
+
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(order).toEqual(["dm", "public-reply"]);
+  });
+
+  it("stays silent in public when the monthly plan limit blocked the send", async () => {
+    mockReserveWorkspaceDMSend.mockResolvedValue({
+      allowed: false,
+      reserved: false,
+      remaining: 0,
+      limit: 2000,
+      periodStart: usagePeriodStart,
+    });
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockSendCommentReply).not.toHaveBeenCalled();
+  });
+
+  it("stays silent in public while the send is only requeued, not sent", async () => {
+    mockReserveDMSlot.mockResolvedValue({
+      allowed: false,
+      currentCount: 200,
+      remainingDMs: 0,
+      shouldRequeue: true,
+      requeueDelayMs: 60_000,
+      shouldSkip: false,
+      reserved: false,
+    });
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockSendCommentReply).not.toHaveBeenCalled();
+    expect(mockQueueAdd).toHaveBeenCalled();
+  });
+
+  it("still retries a public reply whose DM already went out", async () => {
+    mockPrisma.dmLog.findUnique.mockResolvedValue({
+      id: "log_1",
+      status: "SENT",
+      publicReplySentAt: null,
+    });
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockSendCommentReply).toHaveBeenCalledTimes(1);
+    // The DM already landed; it must not be sent a second time.
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockSendPrivateReplyWithLinkButton).not.toHaveBeenCalled();
+  });
+
+  it("does not double-post a public reply that already went out", async () => {
+    mockPrisma.dmLog.findUnique.mockResolvedValue({
+      id: "log_1",
+      status: "SENT",
+      publicReplySentAt: new Date(),
+    });
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockSendCommentReply).not.toHaveBeenCalled();
+  });
+});
+
+describe("DM Worker — an unknown refusal is not a template problem", () => {
+  const withLink = {
+    ...mockAutomation,
+    trackedLinks: [
+      {
+        slug: "abc123",
+        label: "Primary campaign link",
+        destinationUrl: "https://example.com/tool",
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    mockPrisma.automation.findMany.mockResolvedValue([withLink]);
+  });
+
+  it("does not retry as plain text when the recipient refused the message", async () => {
+    // sub=1893060 is a recipient-side refusal: the person cannot receive a
+    // message request from the Page. Retrying the identical content as text
+    // cannot help, and logging it as "button template rejected" names a cause
+    // that was never involved.
+    mockSendPrivateReplyWithLinkButton.mockRejectedValue(
+      new Error(
+        "Invalid parameter (/v25.0/1061951727001979/messages) [code=100 sub=1893060 type=OAuthException]"
+      )
+    );
+    const processor = getProcessor();
+
+    await expect(processor(createMockJob())).rejects.toThrow();
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+  });
+
+  it("does not retry as plain text on an error it has never seen", async () => {
+    mockSendPrivateReplyWithLinkButton.mockRejectedValue(
+      new Error("Some brand new Meta failure nobody has classified yet")
+    );
+    const processor = getProcessor();
+
+    await expect(processor(createMockJob())).rejects.toThrow();
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+  });
+
+  it("still falls back to plain text on a genuine template rejection", async () => {
+    mockSendPrivateReplyWithLinkButton.mockRejectedValue(
+      new Error("(#100) Invalid keys \"buttons\" for template payload")
+    );
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockSendPrivateReply).toHaveBeenCalledTimes(1);
   });
 });
