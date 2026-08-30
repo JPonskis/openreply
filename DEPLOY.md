@@ -127,3 +127,62 @@ sweeps throw.
 
 **The guard:** `/api/health` `ops.looseMatchCampaigns` (setting) and `ops.sentenceDms24h`
 (what actually shipped) should both read 0. Watchdog rules 10 and 11 alert on either.
+
+## The public reply is a receipt, not a promise (2026-08-30)
+
+Every message in a campaign's public-reply pool claims delivery — "sent!",
+"check your DMs", "on its way!". The worker used to post it **before** the DM,
+deliberately: "decoupled so a DM failure never suppresses it."
+
+On 2026-08-30 three people commented `Premium` on the Medicare reel. All three
+got a public "sent!" under their own comment. None got a DM. Meta refused the
+send with a bare `Invalid parameter` — `code=100 sub=1893060`, which Meta does
+not document anywhere. It is recipient-side: 3 comments failed while **36
+others on the same post, same campaign, same token** went through, interleaved
+in time.
+
+The order is now: **DM first, public reply only once the DM is a fact.** Also
+silent on plan-limit skips, cross-campaign dedup skips, and rate-limit
+requeues, all of which used to announce a send that had not happened. The
+retry pass for a DM that already sent still posts its outstanding reply.
+
+**A DM failure now means nothing was said in public.** That is the correct
+default — better silence than a false claim — but it does mean a person whose
+account refuses message requests gets nothing at all. If you want them handed
+the link publicly instead, that is a product decision and needs new copy.
+
+### Reading a failure without database access
+
+`/api/health` now returns `dmAttempts24h` and `dmFailureReasons24h` — a
+trace-stripped tally of the real Meta errors, no comment text and no user ids
+(the endpoint is unauthenticated). A bare count cannot tell "three accounts
+refuse message requests" (nothing to fix) from "the token died" (everything is
+down), so the watchdog quotes the reasons and only fires when failures are BOTH
+>= 5 and > 15% of attempts.
+
+### Reaching the database from a laptop
+
+`DATABASE_URL` in `.secrets/openreply-railway-pg.json` points at
+`postgres.railway.internal`, which only resolves inside Railway. Use the public
+proxy in the table at the top of this file:
+
+```
+postgresql://postgres:$PGPASSWORD@altaria.proxy.rlwy.net:17030/railway
+```
+
+`railway ssh` is NOT a fallback — it needs an SSH key registered on Jacob's
+Railway account, which is an account settings change.
+
+### Deploying both halves
+
+The app and the worker are separate deploys and BOTH are needed for a change
+that touches `lib/`:
+
+```bash
+npx vercel deploy --prod --token "$(cat ../../.secrets/vercel-token.txt)" --yes
+railway up --service worker --detach
+```
+
+Confirm the worker actually restarted by checking that
+`checks.worker.heartbeat.startedAt` moved — `railway up` returning a build URL
+is not evidence the new code is running.
